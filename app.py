@@ -9,6 +9,7 @@ import os
 import pwd
 import re
 import secrets
+import shlex
 import ssl
 import time
 import spwd
@@ -66,6 +67,20 @@ def run_as_user_args(username: str, args: List[str]) -> List[str]:
     if os.geteuid() == 0 and Path("/usr/sbin/runuser").exists():
         return ["/usr/sbin/runuser", "-u", username, "--", *args]
     return ["sudo", "-n", "-H", "-u", username, *args]
+
+
+def run_vnc_cmd(username: str, args: List[str]) -> subprocess.CompletedProcess:
+    env = build_vnc_launch_env(username)
+    env_export = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
+    cmdline = " ".join(shlex.quote(token) for token in args)
+    shell_cmd = f"/usr/bin/env {env_export} {cmdline}"
+
+    if os.geteuid() == 0 and Path("/usr/sbin/runuser").exists():
+        # Use a PAM login shell so GUI apps (notably Snap Firefox) run in a
+        # normal user session scope instead of the system service cgroup.
+        return run_cmd(["/usr/sbin/runuser", "-l", username, "-c", shell_cmd])
+
+    return run_cmd(["sudo", "-n", "-H", "-u", username, "bash", "-lc", shell_cmd])
 
 
 def vnc_log_tail(username: str, display: int, lines: int = 40) -> str:
@@ -142,15 +157,24 @@ def ensure_user_runtime(username: str) -> None:
 
 
 def build_vnc_launch_env(username: str) -> Dict[str, str]:
-    env = dict(os.environ)
-    uid = pwd.getpwnam(username).pw_uid
+    user = pwd.getpwnam(username)
+    uid = user.pw_uid
     runtime_dir = f"/run/user/{uid}"
+    env = {
+        "HOME": user.pw_dir,
+        "USER": username,
+        "LOGNAME": username,
+        "SHELL": user.pw_shell or "/bin/bash",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "NO_AT_BRIDGE": "1",
+        "GTK_A11Y": "none",
+        "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "0",
+    }
     if os.path.isdir(runtime_dir):
         env["XDG_RUNTIME_DIR"] = runtime_dir
-        bus_path = f"{runtime_dir}/bus"
-        if os.path.exists(bus_path):
-            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
-            env["TVNC_USERDBUS"] = "1"
+    if "NOVNCEXT_XSTARTUP" in os.environ:
+        env["NOVNCEXT_XSTARTUP"] = os.environ["NOVNCEXT_XSTARTUP"]
     return env
 
 
@@ -287,7 +311,7 @@ def start_turbovnc_session(username: str, name: str, geometry: str, depth: int) 
         "-depth",
         str(depth),
     ]
-    proc = run_cmd(run_as_user_args(username, args), env=build_vnc_launch_env(username))
+    proc = run_vnc_cmd(username, args)
     if proc.returncode != 0:
         detail_parts = []
         if proc.stdout.strip():
@@ -363,7 +387,7 @@ def stop_turbovnc_session_by_name(username: str, name: str) -> None:
     if display is None:
         raise ValueError(f"Session '{name}' not found or not running")
 
-    proc = run_cmd(run_as_user_args(username, [str(TURBOVNC_BIN), "-kill", f":{display}"]))
+    proc = run_vnc_cmd(username, [str(TURBOVNC_BIN), "-kill", f":{display}"])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "Failed to kill TurboVNC session")
 

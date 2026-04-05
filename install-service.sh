@@ -51,6 +51,7 @@ fi
 [[ -f "${REPO_DIR}/requirements.txt" ]] || { echo "Missing requirements.txt in ${REPO_DIR}"; exit 1; }
 [[ -f "${REPO_DIR}/xstartup.novncext.sh" ]] || { echo "Missing xstartup.novncext.sh in ${REPO_DIR}"; exit 1; }
 [[ -d "${REPO_DIR}/static" ]] || { echo "Missing static directory in ${REPO_DIR}"; exit 1; }
+[[ -d "${REPO_DIR}/bin" ]] || { echo "Missing bin directory in ${REPO_DIR}"; exit 1; }
 [[ -f "${CERT_SRC}" ]] || { echo "Cert file not found: ${CERT_SRC}"; exit 1; }
 [[ -f "${KEY_SRC}" ]] || { echo "Key file not found: ${KEY_SRC}"; exit 1; }
 
@@ -69,12 +70,15 @@ fi
 
 install -d -m 755 "${TARGET_DIR}"
 install -d -m 755 "${TARGET_DIR}/static"
+rm -rf "${TARGET_DIR}/bin"
+install -d -m 755 "${TARGET_DIR}/bin"
 install -d -m 755 "${TARGET_DIR}/certs"
 
 install -m 644 "${REPO_DIR}/app.py" "${TARGET_DIR}/app.py"
 install -m 644 "${REPO_DIR}/requirements.txt" "${TARGET_DIR}/requirements.txt"
 install -m 755 "${REPO_DIR}/xstartup.novncext.sh" "${TARGET_DIR}/xstartup.novncext.sh"
 cp -a "${REPO_DIR}/static/." "${TARGET_DIR}/static/"
+cp -a "${REPO_DIR}/bin/." "${TARGET_DIR}/bin/"
 
 install -m 644 "${CERT_SRC}" "${TARGET_DIR}/certs/server.cert.pem"
 install -m 600 "${KEY_SRC}" "${TARGET_DIR}/certs/server.key.pem"

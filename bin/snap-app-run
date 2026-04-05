@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: snap-app-run <app> [args...]" >&2
+  exit 2
+fi
+
+app="$1"
+shift || true
+
+run_plain() {
+  /usr/bin/snap run "${app}" "$@"
+}
+
+# Prefer launching snap apps inside a user systemd scope when available.
+# This improves behavior in remote desktop sessions where cgroup/session
+# ancestry can otherwise confuse snap runtime checks.
+uid="$(id -u)"
+real_user_bus="/run/user/${uid}/bus"
+scope_bus_addr=""
+if [[ -S "${real_user_bus}" ]]; then
+  scope_bus_addr="unix:path=${real_user_bus}"
+elif [[ -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+  scope_bus_addr="unix:path=${XDG_RUNTIME_DIR}/bus"
+fi
+
+if command -v systemd-run >/dev/null 2>&1 && [[ -n "${scope_bus_addr}" ]]; then
+  if DBUS_SESSION_BUS_ADDRESS="${scope_bus_addr}" \
+      systemd-run --user --scope --quiet --collect /usr/bin/snap run "${app}" "$@"; then
+    exit 0
+  fi
+  rc=$?
+  echo "snap-app-run: systemd-run launch failed for '${app}' (exit ${rc}), falling back to plain snap run" >&2
+fi
+
+if run_plain; then
+  exit 0
+fi
+
+rc=$?
+echo "snap-app-run: snap app '${app}' failed to start (exit ${rc})" >&2
+exit "${rc}"
