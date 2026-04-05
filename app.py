@@ -83,6 +83,27 @@ def vnc_log_tail(username: str, display: int, lines: int = 40) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+def xsession_errors_tail(username: str, lines: int = 80) -> str:
+    try:
+        home = pwd.getpwnam(username).pw_dir
+    except KeyError:
+        return ""
+
+    chunks: List[str] = []
+    for fname in (".xsession-errors", ".xsession-errors.old"):
+        path = Path(home) / fname
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        tail = "\n".join(text.splitlines()[-lines:])
+        if tail.strip():
+            chunks.append(f"== {path} (tail) ==\n{tail}")
+    return "\n\n".join(chunks)
+
+
 def ensure_user_runtime(username: str) -> None:
     """Best-effort setup of /run/user/<uid> and per-user DBus runtime."""
     if os.geteuid() != 0:
@@ -268,7 +289,19 @@ def start_turbovnc_session(username: str, name: str, geometry: str, depth: int) 
     ]
     proc = run_cmd(run_as_user_args(username, args), env=build_vnc_launch_env(username))
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "Failed to start TurboVNC session")
+        detail_parts = []
+        if proc.stdout.strip():
+            detail_parts.append(f"vncserver stdout:\n{proc.stdout.strip()}")
+        if proc.stderr.strip():
+            detail_parts.append(f"vncserver stderr:\n{proc.stderr.strip()}")
+        vtail = vnc_log_tail(username, display)
+        if vtail:
+            detail_parts.append(f"Recent {username} VNC log:\n{vtail}")
+        xtail = xsession_errors_tail(username)
+        if xtail:
+            detail_parts.append(f"Recent Xsession logs:\n{xtail}")
+        detail = "\n\n".join(detail_parts).strip()
+        raise RuntimeError(detail or "Failed to start TurboVNC session")
 
     # vncserver can return before the session is stable; verify it remains alive.
     appear_deadline = time.time() + 6.0
@@ -286,7 +319,12 @@ def start_turbovnc_session(username: str, name: str, geometry: str, depth: int) 
 
     if not appeared:
         tail = vnc_log_tail(username, display)
-        detail = f"\nRecent {username} VNC log:\n{tail}" if tail else ""
+        xtail = xsession_errors_tail(username)
+        detail = ""
+        if tail:
+            detail += f"\nRecent {username} VNC log:\n{tail}"
+        if xtail:
+            detail += f"\nRecent Xsession logs:\n{xtail}"
         raise RuntimeError(
             f"Session '{name}' failed to appear for user '{username}' on :{display}." + detail
         )
@@ -302,7 +340,12 @@ def start_turbovnc_session(username: str, name: str, geometry: str, depth: int) 
                 break
         if not alive:
             tail = vnc_log_tail(username, display)
-            detail = f"\nRecent {username} VNC log:\n{tail}" if tail else ""
+            xtail = xsession_errors_tail(username)
+            detail = ""
+            if tail:
+                detail += f"\nRecent {username} VNC log:\n{tail}"
+            if xtail:
+                detail += f"\nRecent Xsession logs:\n{xtail}"
             raise RuntimeError(
                 f"Session '{name}' exited shortly after start for user '{username}' on :{display}." + detail
             )
@@ -531,13 +574,21 @@ async def create_session(request: web.Request) -> web.StreamResponse:
         if depth not in (16, 24, 32):
             raise ValueError
     except ValueError:
-        raise web.HTTPFound("/?message=Invalid+depth+must+be+16,24,or+32")
+        return web.Response(
+            text=render_index(username, "Invalid depth; must be 16, 24, or 32"),
+            content_type="text/html",
+            status=400,
+        )
 
     try:
         print(f"[novncext] create requested user={username} name={name} geometry={geometry} depth={depth}")
         start_turbovnc_session(username=username, name=name, geometry=geometry, depth=depth)
     except (ValueError, RuntimeError) as exc:
-        raise web.HTTPFound(f"/?message={quote(str(exc), safe='')}")
+        return web.Response(
+            text=render_index(username, str(exc)),
+            content_type="text/html",
+            status=400,
+        )
     raise web.HTTPFound(f"/?message={quote(f'Session {name} created', safe='')}")
 
 
@@ -547,7 +598,11 @@ async def delete_session(request: web.Request) -> web.StreamResponse:
     try:
         stop_turbovnc_session_by_name(username, name)
     except (ValueError, RuntimeError) as exc:
-        raise web.HTTPFound(f"/?message={quote(str(exc), safe='')}")
+        return web.Response(
+            text=render_index(username, str(exc)),
+            content_type="text/html",
+            status=400,
+        )
     raise web.HTTPFound(f"/?message={quote(f'Session {name} deleted', safe='')}")
 
 
